@@ -1,0 +1,5 @@
+{
+  "IT_Admin": ["IT_manuals.pdf", "it_security_policy.pdf", "employee_handbook.pdf"],
+  "HR_Manager": ["employee_handbook.pdf", "travel_policy.pdf"],
+  "Employee": ["employee_handbook.pdf"]
+}
