@@ -1,16 +1,32 @@
 import streamlit as st
 import requests
-import json
 import os
 import subprocess
-import threading
+import json
 import time
 
+# --- Import Utility Functions ---
+from utils.file_handlers import save_uploaded_file
+from utils.citation_formatter import format_citations
+from utils.auth_service import get_allowed_documents
+
+# --- Configuration ---
 API_ENDPOINT = "http://127.0.0.1:8000/ask_agent"
 DATA_DIRECTORY = "data/documents"
 CHROMA_PATH = "chroma"
 
+# Ensure data directory exists
 os.makedirs(DATA_DIRECTORY, exist_ok=True)
+
+# --- Session State Initialization ---
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = ""
+if "current_role" not in st.session_state:
+    st.session_state.current_role = "Employee"
+if "ingestion_status" not in st.session_state:
+    st.session_state.ingestion_status = "pending"
 
 # --- Functions ---
 def run_ingestion_script(file_path):
@@ -33,14 +49,18 @@ def run_ingestion_script(file_path):
         st.error("Error: 'process_documents.py' not found. Please ensure the file exists.")
         return False
 
-def call_api(question, chat_history):
-    """Sends a question to the FastAPI backend and gets a response."""
+def call_api(question, chat_history, role):
+    """Sends a question to the FastAPI backend with role context."""
     try:
         response = requests.post(
             API_ENDPOINT,
-            json={"question": question, "chat_history": chat_history}
+            json={
+                "question": question,
+                "chat_history": chat_history,
+                "role": role
+            }
         )
-        response.raise_for_status()  # Raise an exception for bad status codes
+        response.raise_for_status()
         return response.json().get("answer")
     except requests.exceptions.RequestException as e:
         st.error(f"Error communicating with the backend API: {e}")
@@ -51,11 +71,13 @@ def clear_chat_history():
     st.session_state.chat_history = ""
     st.session_state.ingestion_status = "pending"
 
-st.set_page_config(page_title="Corporate Policy Navigator", layout="wide")
-st.title("Corporate Policy and Knowledge Navigator")
+# --- Streamlit UI ---
+st.set_page_config(page_title="Corporate Knowledge Navigator", layout="wide")
+st.title("🤖 Corporate Policy and Knowledge Navigator")
 
+# Sidebar for file upload, role selection, and controls
 with st.sidebar:
-    st.header("Admin Controls")
+    st.header("Admin & User Controls")
 
     st.info("Upload your corporate policy PDFs here to build or expand the knowledge base.")
 
@@ -64,9 +86,6 @@ with st.sidebar:
         type="pdf",
         accept_multiple_files=True
     )
-
-    if 'ingestion_status' not in st.session_state:
-        st.session_state.ingestion_status = "pending"
 
     if uploaded_files:
         if st.button("Process Documents"):
@@ -86,25 +105,36 @@ with st.sidebar:
             if all_successful:
                 st.success("All documents processed successfully! You can now ask questions.")
             st.session_state.ingestion_status = "complete"
-            st.rerun()
+            st.rerun() # Corrected from st.experimental_rerun()
 
     st.button("Clear Chat History", on_click=clear_chat_history)
 
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-if "chat_history" not in st.session_state:
-    st.session_state.chat_history = ""
+    st.divider()
+    st.subheader("User Role Simulation")
+    role_options = ["Employee", "HR_Manager", "IT_Admin"]
+    selected_role = st.selectbox(
+        "Select your role:",
+        options=role_options,
+        index=role_options.index(st.session_state.current_role)
+    )
+    if selected_role != st.session_state.current_role:
+        st.session_state.current_role = selected_role
+        st.session_state.messages = []
+        st.session_state.chat_history = ""
+        st.rerun() # Corrected from st.experimental_rerun()
 
+# Display chat messages from history on app rerun
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
+# React to user input
 if prompt := st.chat_input("Ask a question about company policies..."):
     st.chat_message("user").markdown(prompt)
     st.session_state.messages.append({"role": "user", "content": prompt})
 
     with st.spinner("Searching and generating response..."):
-        full_response = call_api(prompt, st.session_state.chat_history)
+        full_response = call_api(prompt, st.session_state.chat_history, st.session_state.current_role)
 
     st.session_state.chat_history += f"Human: {prompt}\nAI: {full_response}\n"
 

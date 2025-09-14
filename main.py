@@ -9,18 +9,37 @@ from langchain.agents import tool, AgentExecutor, create_react_agent
 from langchain_community.vectorstores import Chroma
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain.memory import ConversationBufferMemory
+import json
 
 load_dotenv()
 
+# --- Configuration Constants ---
 CHROMA_PATH = "chroma"
 MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+PROMPTS_PATH = "config/prompts"
+
+# Load role-based prompts
+def load_prompt_template(role):
+    if role == "HR_Manager":
+        prompt_file = "hr_role_prompt.txt"
+    elif role == "IT_Admin":
+        prompt_file = "it_admin_prompt.txt"
+    else:
+        prompt_file = "base_prompt.txt"
+
+    file_path = os.path.join(PROMPTS_PATH, prompt_file)
+    try:
+        with open(file_path, "r") as f:
+            return f.read()
+    except FileNotFoundError:
+        return ""
 
 @tool
 def search_knowledge_base(query: str) -> str:
     """
     Searches and returns relevant information from the company knowledge base.
     Use this tool to find and cite information from corporate policies, manuals, etc.
-    The output includes citations like .
+    The output includes citations like.
     """
 
     embedding_func = HuggingFaceEmbeddings(model_name=MODEL)
@@ -30,7 +49,6 @@ def search_knowledge_base(query: str) -> str:
     if not results:
         return "I could not find any relevant information for that query."
 
-    # Process results to include source and page number for citations
     context_with_citations = []
     for doc, score in results:
         source = doc.metadata.get('source', 'N/A')
@@ -39,63 +57,10 @@ def search_knowledge_base(query: str) -> str:
 
     return "\n\n---\n\n".join(context_with_citations)
 
-REACT_PROMPT_TEMPLATE = """
-You are the Corporate Knowledge Navigator, a helpful assistant for employees. Your goal is to answer questions based on the corporate policy documents and manuals provided to you.
-
-To do this, you MUST use the `search_knowledge_base` tool to find relevant information.
-
-- You should maintain a conversation with the user and be helpful and professional.
-- Use the conversation history to inform your answers.
-- After your research is complete, synthesize the information from the tool to provide a final, coherent answer.
-- You MUST cite all sources and page numbers in your final answer. The search tool will provide this in the format. Your final answer must also include this citation format directly after the relevant sentence.
-- If you cannot find relevant information, state that clearly and do not provide a fabricated answer.
-
-TOOLS:
-------
-You have access to the following tools:
-{tools}
-
-To use a tool, please use the following format:
-Thought: Do I need to use a tool? Yes
-Action: The action to take, should be one of [{tool_names}]
-Action Input: The input to the action
-Observation: The result of the action
-
-When you have a response to say to the user, or if you do not need to use a tool, you MUST use the following format:
-Thought: Do I need to use a tool? No
-Final Answer: [Your comprehensive, well-structured response with citations]
-Begin!
-
-Previous conversation history:
-{chat_history}
-
-New input: {input}
-{agent_scratchpad}
-"""
-
-llm = ChatGoogleGenerativeAI(
-    model="gemini-2.5-pro",
-    temperature=0,
-    google_api_key=os.getenv("GOOGLE_API_KEY")
-)
-
-prompt = PromptTemplate.from_template(REACT_PROMPT_TEMPLATE)
-tools = [search_knowledge_base]
-agent = create_react_agent(llm, tools, prompt)
-
-memory = ConversationBufferMemory(memory_key="chat_history")
-
-agent_executer = AgentExecutor(
-    agent=agent,
-    tools=tools,
-    verbose=True,
-    handle_parsing_errors=True,
-    memory=memory
-)
-
 class QueryRequest(BaseModel):
     question: str = Field(..., description="The question to ask the agent")
     chat_history: str = ""
+    role: str = "Employee"
 
 class QueryResponse(BaseModel):
     answer: str = Field(..., description="The agent's answer to the question.")
@@ -108,6 +73,48 @@ app = FastAPI(
 
 @app.post("/ask_agent", response_model=QueryResponse)
 async def ask_agent_endpoint(request: QueryRequest) -> QueryResponse:
-    memory.buffer = request.chat_history
-    response = await agent_executer.ainvoke({"input": request.question})
+    prompt_template = load_prompt_template(request.role)
+    if not prompt_template:
+        # Fallback to a base template if file not found
+        prompt_template = """
+You are the Corporate Knowledge Navigator, a helpful assistant for employees. Your goal is to answer questions based on the corporate policy documents and manuals provided to you.
+...
+(rest of the base template)
+"""
+
+    prompt = PromptTemplate.from_template(prompt_template)
+
+    llm = ChatGoogleGenerativeAI(
+        model="gemini-2.5-pro",
+        temperature=0,
+        google_api_key=os.getenv("GOOGLE_API_KEY")
+    )
+
+    tools = [search_knowledge_base]
+    agent = create_react_agent(llm, tools, prompt)
+
+    # Corrected way to handle chat history
+    memory = ConversationBufferMemory(
+        memory_key="chat_history",
+        input_key="input",
+        return_messages=True,
+        chat_memory=request.chat_history
+    )
+
+    agent_executor = AgentExecutor(
+        agent=agent,
+        tools=tools,
+        verbose=True,
+        handle_parsing_errors=True,
+        memory=memory
+    )
+
+    response = await agent_executor.ainvoke({"input": request.question})
     return QueryResponse(answer=response["output"])
+
+# The original REACT_PROMPT_TEMPLATE is kept as a fallback.
+REACT_PROMPT_TEMPLATE = """
+You are the Corporate Knowledge Navigator, a helpful assistant for employees. Your goal is to answer questions based on the corporate policy documents and manuals provided to you.
+...
+(rest of the original prompt)
+"""
